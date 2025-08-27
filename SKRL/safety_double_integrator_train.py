@@ -68,8 +68,11 @@ class SafetyDoubleIntegrator(VectorizedDoubleIntegrator):
         # Signed distance (positive inside bounds, negative outside)
         signed_dist = torch.min(dist_to_min, dist_to_max)
         
-        # Squeeze to match expected dimensions
-        return signed_dist.squeeze(-1)
+        # # Squeeze to match expected dimensions
+        # return signed_dist.squeeze(-1)
+
+        reward = torch.tanh(signed_dist)
+        return reward.squeeze(-1)
 
 
 def plot_safety_critic_heatmap(critic_model, device, pos_range=(-6, 6), vel_range=(-10, 10), 
@@ -233,7 +236,7 @@ def plot_safety_critic_heatmap(critic_model, device, pos_range=(-6, 6), vel_rang
     if show_plot:
         plt.show()
 
-def plot_policy_action_heatmap(policy_model, device, pos_range=(-6, 6), vel_range=(-4, 4), 
+def plot_policy_action_heatmap(policy_model, device, pos_range=(-6, 6), vel_range=(-10, 10), 
                              resolution=100, save_path=None, show_plot=True):
     """
     Plot policy actions as a heatmap
@@ -344,6 +347,18 @@ def load_and_plot_critic(critic_path, policy_path=None, device="cpu", safety_thr
     
     plt.show()
 
+def max_next_value(sampled_states, sampled_next_states, next_state_q_values, target_critic):
+    """
+    Compute the maximum next value for the safety critic
+    This is only an approximation since we cannot solve the maximization exactly.
+        max_u V(x + f(x, u) * dt)
+    """
+    max_next_val = torch.ones_like(next_state_q_values)
+    in_goal = (torch.norm(sampled_states, dim=1) < 0.01).unsqueeze(-1)
+    max_next_val[~in_goal] = next_state_q_values[~in_goal]
+
+    return max_next_val
+
 def main(policy_path, critic_path=None):
     """
     Train a safety critic for the double integrator environment
@@ -412,7 +427,7 @@ def main(policy_path, critic_path=None):
         print("Starting with a new critic...")
     
     # Configure SafetyDDPG
-    total_timesteps = 10000
+    total_timesteps = 20000
     safety_ddpg_config = copy.deepcopy(SAFETY_DDPG_DEFAULT_CONFIG)
     safety_ddpg_config.update({
         "learning_starts": 1000,
@@ -420,7 +435,7 @@ def main(policy_path, critic_path=None):
         "batch_size": 4096,
         "discount_factor": 0.99,
         "discount_factor_scheduler": {
-                "final_gamma": 0.999, 
+                "final_gamma": 0.9999, 
                 "total_timesteps": total_timesteps, 
                 "schedule_type": "linear"
         },
@@ -443,7 +458,8 @@ def main(policy_path, critic_path=None):
         observation_space=env.observation_space,
         action_space=env.action_space,
         device=device,
-        cfg=safety_ddpg_config
+        cfg=safety_ddpg_config,
+        max_next_value_func=max_next_value
     )
     
     # Configure trainer
@@ -483,15 +499,16 @@ def main(policy_path, critic_path=None):
 
 if __name__ == "__main__":
     # Examples of how to load and plot an existing model with different thresholds:
-    load = False
-    policy_path="data/models/ppo_double_integrator_skrl_20250826_203111/policy.pt"
-    critic_path="data/models/safety_ddpg_double_integrator_20250827_153353/safety_critic.pt"
+    load = True
+    # load = False
+    policy_path="data/models/ppo_double_integrator_skrl_20250827_170020/policy.pt"
+    critic_path="data/models/safety_ddpg_double_integrator_20250827_173450/safety_critic.pt"
     
     if load:
         # Load and plot both critic and policy
         load_and_plot_critic(critic_path=critic_path, 
-                           policy_path=None, 
+                           policy_path=policy_path, 
                            device="cpu", 
-                           safety_threshold=0.25)
+                           safety_threshold=0.40)
     else:
         main(policy_path=policy_path, critic_path=None)

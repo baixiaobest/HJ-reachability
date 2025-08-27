@@ -101,6 +101,7 @@ class SafetyDDPG(Agent):
         action_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
         device: Optional[Union[str, torch.device]] = None,
         cfg: Optional[dict] = None,
+        max_next_value_func: callable = None
     ) -> None:
         """Deep Deterministic Policy Gradient (DDPG)
 
@@ -208,6 +209,8 @@ class SafetyDDPG(Agent):
             self._discount_scheduler = DiscountFactorScheduler(initial_gamma=self._discount_factor, **self._discount_factor_scheduler_cfg)
         else:
             self._discount_scheduler = None
+
+        self._max_next_value_func = max_next_value_func
 
     def init(self, trainer_cfg: Optional[Mapping[str, Any]] = None) -> None:
         """Initialize the agent"""
@@ -370,11 +373,25 @@ class SafetyDDPG(Agent):
                         {"states": sampled_next_states}, role="target_critic"
                     )
 
+                    
+                    if self._max_next_value_func is None:
+                        # Here, we make an assumption that max_u V(x + f(x,u)*dt) is approximated by
+                        # V(x') where x' is the next state after taking action u from state x.
+                        # This assumes that the control policy u is optimal or near-optimal.
+                        # In practice, this may not hold, and can cause abnormality in the value function.
+                        max_next_q_val = next_state_q_values
+                    else:
+                        max_next_q_val = self._max_next_value_func(
+                            sampled_states,
+                            sampled_next_states,
+                            next_state_q_values,
+                            self.target_critic)
+                        
                     target_values = (
                         (1 - self._discount_factor) * sampled_rewards\
                         + self._discount_factor 
                             * torch.min(sampled_rewards, 
-                                        next_state_q_values * (sampled_terminated | sampled_truncated).logical_not())
+                                        max_next_q_val * (sampled_terminated | sampled_truncated).logical_not())
                     )
 
                 # compute critic loss

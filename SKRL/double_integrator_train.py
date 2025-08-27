@@ -9,6 +9,7 @@ import torch
 import datetime
 
 # SKRL imports
+from PPOEnhanced import PPOWithEntropyAnnealing
 from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
 from skrl.memories.torch import RandomMemory
 from skrl.trainers.torch import SequentialTrainer
@@ -36,6 +37,7 @@ def main():
     env = VectorizedDoubleIntegrator(
         num_envs=num_envs, 
         device=device,
+        max_steps=1000,
         pos_range=(-9.0, 9.0),    # Initial position range
         vel_range=(-3.0, 3.0),    # Initial velocity range
         pos_bounds=(-10.0, 10.0)  # Position termination boundaries
@@ -84,11 +86,18 @@ def main():
             "directory": "./data/skrl_logs",
             "experiment_name": f"ppo_double_integrator_{timestamp}",  # Unique name
             "write_interval": 10,  # Very frequent logging for debugging
-        }
+        },
+
+        # Simple entropy annealing configuration
+        "entropy_annealing_enabled": True,    # Enable/disable entropy annealing
+        "initial_entropy_coef": 0.02,         # Starting entropy coefficient
+        "final_entropy_coef": 0.001,          # Final entropy coefficient
+        "annealing_schedule": "exponential",  # "linear" or "exponential"
+        "exponential_decay_rate": 0.01,       # Decay rate for exponential (smaller = faster decay)
     })
     
     # Create PPO agent
-    agent = PPO(
+    agent = PPOWithEntropyAnnealing(
         models={"policy": policy, "value": value},
         memory=memory,
         cfg=ppo_config,

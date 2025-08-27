@@ -23,11 +23,11 @@ def get_hardcoded_args():
     class Args:
         def __init__(self):
             # MODIFY THESE SETTINGS AS NEEDED
-            self.model_path = "./data/models/ppo_double_integrator_skrl_20250826_203111"  # Change to your model path
+            self.model_path = "data/models/ppo_double_integrator_skrl_20250827_170020"  # Change to your model path
             self.deterministic = True    # Set to True for deterministic, False for stochastic
             self.stochastic = False      # Set to True for stochastic, False for deterministic
             self.num_episodes = 10       # Number of episodes to run
-            self.max_steps = 200         # Maximum steps per episode
+            self.max_steps = 1000         # Maximum steps per episode
             self.render = True           # Set to True to show plots
             self.save_results = False     # Set to True to save results
             self.device = "cuda"         # "auto", "cuda", or "cpu"
@@ -261,8 +261,6 @@ def main():
         max_steps=args.max_steps,
         pos_range=(-9.0, 9.0),
         vel_range=(-3.0, 3.0),
-        # pos_range=(0.35, 0.35),
-        # vel_range=(-1.3, -1.3),
         pos_bounds=(-10.0, 10.0)
     )
     
