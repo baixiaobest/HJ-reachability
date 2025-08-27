@@ -49,9 +49,10 @@ class SafetyDoubleIntegrator(VectorizedDoubleIntegrator):
                  pos_range: tuple = (-2.0, 2.0),  # (min, max) for initial position
                  vel_range: tuple = (-1.0, 1.0),   # (min, max) for initial velocity
                  pos_bounds: tuple = (-5.0, 5.0),   # (min, max) termination boundaries for position
+                 u_range: tuple = (-3.0, 3.0),   # (min, max) for action
                  penalty_barrier_bounds=(-5.0, 5.0)):
         super().__init__(
-            dt=dt, max_steps=max_steps, device=device, pos_range=pos_range, vel_range=vel_range, pos_bounds=pos_bounds)
+            dt=dt, max_steps=max_steps, device=device, pos_range=pos_range, vel_range=vel_range, pos_bounds=pos_bounds, u_range=u_range)
         self.penalty_barrier_bounds = penalty_barrier_bounds
 
     def compute_reward(self, actions_t):
@@ -73,24 +74,64 @@ class SafetyDoubleIntegrator(VectorizedDoubleIntegrator):
 
         reward = torch.tanh(signed_dist)
         return reward.squeeze(-1)
+    
+config = {
+        "env": {
+            "num_envs": 1024,
+            "pos_range": (-6.0, 6.0),          # Initial position range
+            "vel_range": (-10.0, 10.0),         # Initial velocity range
+            "pos_bounds": (-6.0, 6.0),          # Position termination boundaries
+            "penalty_barrier_bounds": (-5.0, 5.0), # Bounds for safety reward calculation
+            "u_range": (-3.0, 3.0)
+        },
+        "agent": {
+            "memory_size": 100000,
+            "learning_starts": 1000,
+            "gradient_steps": 1,
+            "batch_size": 4096,
+            "discount_factor": 0.99,
+            "discount_factor_scheduler": {
+                "initial_gamma": 0.99, 
+                "final_gamma": 0.9999, 
+                "total_timesteps": 20000
+            },
+            "critic_learning_rate": 3e-4,
+            "polyak": 0.05,
+        },
+        "trainer": {
+            "timesteps": 20000,
+            "headless": True
+        },
+        "plot": {
+            "pos_range": (-6.0, 6.0),        # Plotting range for position
+            "vel_range": (-10.0, 10.0),      # Plotting range for velocity
+            "resolution": 200,               # Heatmap resolution
+            "safety_threshold": 0.0,         # Threshold to define the safe set
+        }
+    }
 
 
-def plot_safety_critic_heatmap(critic_model, device, pos_range=(-6, 6), vel_range=(-10, 10), 
-                              resolution=100, save_path=None, show_plot=True, safety_threshold=0.0):
+def plot_safety_critic_heatmap(critic_model, device, config, 
+                              save_path=None, show_plot=True):
     """
-    Plot safety critic values as a heatmap
+    Plot safety critic values as a heatmap with analytical safe set boundary.
     
     Args:
-        critic_model: Trained safety critic model
-        device: torch device
-        pos_range: tuple of (min_pos, max_pos) for plotting
-        vel_range: tuple of (min_vel, max_vel) for plotting
-        resolution: number of grid points per axis
-        save_path: path to save the plot (optional)
-        show_plot: whether to display the plot
-        safety_threshold: threshold value for safety (default: 0.0)
+        critic_model: Trained safety critic model.
+        device: torch device.
+        plot_config (dict): Dictionary with plotting and safety parameters.
+        save_path (str, optional): Path to save the plot. Defaults to None.
+        show_plot (bool, optional): Whether to display the plot. Defaults to True.
     """
     critic_model.eval()
+    
+    # Unpack parameters from the configuration dictionary
+    pos_range = config["plot"]["pos_range"]
+    vel_range = config["plot"]["vel_range"]
+    resolution = config["plot"]["resolution"]
+    safety_threshold = config["plot"]["safety_threshold"]
+    barrier_bounds = config["env"]["penalty_barrier_bounds"]
+    u_range = config["env"]["u_range"]
     
     # Create grid of positions and velocities
     pos_vals = np.linspace(pos_range[0], pos_range[1], resolution)
@@ -117,10 +158,8 @@ def plot_safety_critic_heatmap(critic_model, device, pos_range=(-6, 6), vel_rang
     
     # Handle edge cases for TwoSlopeNorm - ensure proper ordering around safety_threshold
     if vmin >= safety_threshold:
-        # All values are above threshold (safe), adjust vmin to include threshold
         vmin = min(safety_threshold - 0.1, vmin - 0.1)
     elif vmax <= safety_threshold:
-        # All values are below threshold (unsafe), adjust vmax to include threshold
         vmax = max(safety_threshold + 0.1, vmax + 0.1)
     
     # Create a normalization that centers at safety_threshold
@@ -139,14 +178,33 @@ def plot_safety_critic_heatmap(critic_model, device, pos_range=(-6, 6), vel_rang
     cbar.ax.text(0.5, safety_threshold, f'{safety_threshold} (Safety Threshold)', 
                  transform=cbar.ax.transData, ha='left', va='center', fontweight='bold')
     
-    # Add boundary lines (assuming pos_bounds = (-5, 5))
-    plt.axvline(x=-5, color='black', linestyle='--', linewidth=3, label='Position Boundaries')
-    plt.axvline(x=5, color='black', linestyle='--', linewidth=3)
+    # Add boundary lines using parameters from the config
+    plt.axvline(x=barrier_bounds[0], color='black', linestyle='--', linewidth=3, label='Position Boundaries')
+    plt.axvline(x=barrier_bounds[1], color='black', linestyle='--', linewidth=3)
+    
+    # Add analytical safe set boundary curves
+    x_min, x_max = barrier_bounds[0], barrier_bounds[1]
+    
+    # Create position arrays for the curves
+    x_vals = np.linspace(x_min, x_max, 1000)
+    
+    # Top curve: v_x = sqrt(2*(x_max - x)*|u_range|)
+    # x_top = x_vals[x_vals <= x_max]
+    v_top = np.sqrt(2 * (x_max - x_vals) * np.abs(u_range[0]))
+    
+    # Bottom curve: v_x = -sqrt(2*(x - x_min)*|u_range|)
+    # x_bottom = x_vals[x_vals >= x_min]
+    v_bottom = -np.sqrt(2 * (x_vals - x_min) * np.abs(u_range[1]))
+    
+    # Plot the analytical boundary curves
+    plt.plot(x_vals, v_top, 'k-', linewidth=3, 
+                label='Analytical Safe Set Boundary', alpha=0.8)
+    plt.plot(x_vals, v_bottom, 'k-', linewidth=3, alpha=0.8)
     
     # Labels and title
     plt.xlabel('Position', fontsize=12)
     plt.ylabel('Velocity', fontsize=12)
-    plt.title(f'Safety Critic Heatmap\n(Blue: Safe regions (value > {safety_threshold}), Red: Unsafe regions (value ≤ {safety_threshold}))', 
+    plt.title(f'Safety Critic Heatmap with Analytical Boundary\n(Blue: Safe regions (value > {safety_threshold}), Red: Unsafe regions (value ≤ {safety_threshold}))', 
               fontsize=14)
     plt.legend(fontsize=11)
     plt.grid(True, alpha=0.3)
@@ -175,12 +233,17 @@ def plot_safety_critic_heatmap(critic_model, device, pos_range=(-6, 6), vel_rang
              verticalalignment='top', fontsize=10,
              bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
     
+    # Add analytical boundary information
+    plt.text(0.02, 0.68, f'Black curves: Analytical safe set boundary', transform=plt.gca().transAxes, 
+             verticalalignment='top', fontsize=10,
+             bbox=dict(boxstyle='round', facecolor='lightcyan', alpha=0.8))
+    
     if save_path:
         heatmap_save_path = save_path.replace('.png', '_value.png')
         plt.savefig(heatmap_save_path, dpi=300, bbox_inches='tight')
         print(f"Safety critic heatmap saved to {heatmap_save_path}")
     
-    # Second plot - Binary safety set visualization
+    # Second plot - Binary safety set visualization with analytical boundary
     plt.figure(figsize=(12, 8))
     
     # Create binary safety mask
@@ -200,10 +263,15 @@ def plot_safety_critic_heatmap(critic_model, device, pos_range=(-6, 6), vel_rang
     plt.axvline(x=-5, color='black', linestyle='--', linewidth=3, label='Position Boundaries')
     plt.axvline(x=5, color='black', linestyle='--', linewidth=3)
     
+    # Add analytical boundary curves to binary plot as well
+    plt.plot(x_vals, v_top, 'k-', linewidth=3, 
+                label='Analytical Safe Set Boundary', alpha=0.8)
+    plt.plot(x_vals, v_bottom, 'k-', linewidth=3, alpha=0.8)
+    
     # Labels and title for second plot
     plt.xlabel('Position', fontsize=12)
     plt.ylabel('Velocity', fontsize=12)
-    plt.title(f'Binary Safety Set\n(Blue: Safe regions (value > {safety_threshold}), Red: Unsafe regions (value ≤ {safety_threshold}))', 
+    plt.title(f'Binary Safety Set with Analytical Boundary\n(Blue: Safe regions (value > {safety_threshold}), Red: Unsafe regions (value ≤ {safety_threshold}))', 
               fontsize=14)
     plt.legend(fontsize=11)
     plt.grid(True, alpha=0.3)
@@ -227,6 +295,11 @@ def plot_safety_critic_heatmap(critic_model, device, pos_range=(-6, 6), vel_rang
              verticalalignment='top', fontsize=10,
              bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
     
+    # Add analytical boundary information
+    plt.text(0.02, 0.74, f'Black curves: Analytical safe set boundary', transform=plt.gca().transAxes, 
+             verticalalignment='top', fontsize=10,
+             bbox=dict(boxstyle='round', facecolor='lightcyan', alpha=0.8))
+    
     # Save binary plot if save_path is provided
     if save_path:
         binary_save_path = save_path.replace('.png', '_binary.png')
@@ -236,8 +309,7 @@ def plot_safety_critic_heatmap(critic_model, device, pos_range=(-6, 6), vel_rang
     if show_plot:
         plt.show()
 
-def plot_policy_action_heatmap(policy_model, device, pos_range=(-6, 6), vel_range=(-10, 10), 
-                             resolution=100, save_path=None, show_plot=True):
+def plot_policy_action_heatmap(policy_model, device, config, save_path=None, show_plot=True):
     """
     Plot policy actions as a heatmap
     
@@ -250,6 +322,10 @@ def plot_policy_action_heatmap(policy_model, device, pos_range=(-6, 6), vel_rang
         save_path: path to save the plot (optional)
         show_plot: whether to display the plot
     """
+    pos_range = config["plot"]["pos_range"]
+    vel_range = config["plot"]["vel_range"]
+    resolution = config["plot"]["resolution"]
+
     policy_model.eval()
     
     # Create grid of positions and velocities
@@ -334,8 +410,8 @@ def load_and_plot_critic(critic_path, policy_path=None, device="cpu", safety_thr
     critic.load_state_dict(torch.load(critic_path, map_location=device))
     
     critic_plot_path = critic_path.replace('.pt', f'_heatmap_thresh{safety_threshold}.png')
-    plot_safety_critic_heatmap(critic, device, save_path=critic_plot_path, resolution=200,
-                             safety_threshold=safety_threshold, show_plot=False)
+    plot_safety_critic_heatmap(critic, device, config=config, save_path=critic_plot_path,
+                              show_plot=False)
     
     # Load and plot policy if provided
     if policy_path is not None:
@@ -343,7 +419,7 @@ def load_and_plot_critic(critic_path, policy_path=None, device="cpu", safety_thr
         policy.load_state_dict(torch.load(policy_path, map_location=device))
         
         policy_plot_path = policy_path.replace('.pt', '_action_heatmap.png')
-        plot_policy_action_heatmap(policy, device, save_path=policy_plot_path, show_plot=False)
+        plot_policy_action_heatmap(policy, device, config=config, save_path=policy_plot_path, show_plot=False)
     
     plt.show()
 
@@ -366,44 +442,46 @@ def main(policy_path, critic_path=None):
     Args:
         critic_path: Optional path to a pre-trained critic model to continue training
     """
+
     # Set random seed for reproducibility
     set_seed(42)
     
     # Choose device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("Using device:", device)
-
-    num_envs = 1024
     
     # Create timestamp for unique experiment name
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    # Create safety-focused environment
+
+    # =============================================================================
+    # 2. Environment and Memory Setup
+    # =============================================================================
     env = SafetyDoubleIntegrator(
-        num_envs=num_envs, 
+        num_envs=config["env"]["num_envs"], 
         device=device,
-        pos_range=(-6.0, 6.0),     # Initial position range
-        vel_range=(-10.0, 10.0),     # Initial velocity range
-        pos_bounds=(-6.0, 6.0),     # Position termination boundaries
-        penalty_barrier_bounds=(-5.0, 5.0)  # Bounds for safety reward calculation
+        pos_range=config["env"]["pos_range"],
+        vel_range=config["env"]["vel_range"],
+        pos_bounds=config["env"]["pos_bounds"],
+        u_range=config["env"]["u_range"],
+        penalty_barrier_bounds=config["env"]["penalty_barrier_bounds"]
     )
     
-    # Configuration for memory
     memory = RandomMemory(
-        memory_size=100000,
-        num_envs=num_envs,
+        memory_size=config["agent"]["memory_size"],
+        num_envs=config["env"]["num_envs"],
         device=device
     )
-    
-    # Create behavior policy (could be pre-trained or random)
+
+    # =============================================================================
+    # 3. Models and Agent Setup
+    # =============================================================================
     behavior_policy = Policy(env.observation_space, env.action_space, device, 
-                        output_range=[-3.0, 3.0], clip_actions=True)
+                        output_range=config["env"]["u_range"], clip_actions=True)
     
-    # Create safety critic and target critic
     critic = SafetyValue(env.observation_space, env.action_space, device)
     target_critic = SafetyValue(env.observation_space, env.action_space, device)
 
-    # Load behavior policy if available
+    # Load behavior policy
     policy_path = Path(policy_path)
     if policy_path.exists():
         behavior_policy.load_state_dict(torch.load(policy_path, map_location=device))
@@ -412,48 +490,27 @@ def main(policy_path, critic_path=None):
         raise FileNotFoundError(f"Policy file not found: {policy_path}")
     
     # Load critic if path is provided
-    if critic_path is not None:
-        critic_path = Path(critic_path)
-        if critic_path.exists():
-            critic.load_state_dict(torch.load(critic_path, map_location=device))
-            # Copy weights to target critic as well
-            target_critic.load_state_dict(critic.state_dict())
-            print(f"Loaded critic from {critic_path}")
-            print("Continuing training from the loaded critic...")
-        else:
-            print(f"Warning: Critic file not found: {critic_path}")
-            print("Starting with a new critic...")
+    if critic_path is not None and Path(critic_path).exists():
+        critic.load_state_dict(torch.load(critic_path, map_location=device))
+        target_critic.load_state_dict(critic.state_dict())
+        print(f"Loaded critic from {critic_path}, continuing training...")
     else:
         print("Starting with a new critic...")
     
     # Configure SafetyDDPG
-    total_timesteps = 20000
     safety_ddpg_config = copy.deepcopy(SAFETY_DDPG_DEFAULT_CONFIG)
     safety_ddpg_config.update({
-        "learning_starts": 1000,
-        "gradient_steps": 1,
-        "batch_size": 4096,
-        "discount_factor": 0.99,
-        "discount_factor_scheduler": {
-                "final_gamma": 0.9999, 
-                "total_timesteps": total_timesteps, 
-                "schedule_type": "linear"
-        },
-        "critic_learning_rate": 3e-4,
-        "polyak": 0.05,
+        **config["agent"],  # Unpack agent config
         "experiment": {
-            "directory": "data/skrl_logs",            # experiment's parent directory
-            "experiment_name": f"safety_ddpg_double_integrator_{timestamp}",      # experiment name
-            "write_interval": 100,   # TensorBoard writing interval (timesteps)
-            "checkpoint_interval": 1000,      # interval for checkpoints (timesteps)
+            "directory": "data/skrl_logs",
+            "experiment_name": f"safety_ddpg_double_integrator_{timestamp}",
+            "write_interval": 100,
+            "checkpoint_interval": 1000,
         },
     })
     
-    # Create SafetyDDPG agent
     agent = SafetyDDPG(
-        models={"behavior_policy": behavior_policy, 
-                "critic": critic, 
-                "target_critic": target_critic},
+        models={"behavior_policy": behavior_policy, "critic": critic, "target_critic": target_critic},
         memory=memory,
         observation_space=env.observation_space,
         action_space=env.action_space,
@@ -461,54 +518,52 @@ def main(policy_path, critic_path=None):
         cfg=safety_ddpg_config,
         max_next_value_func=max_next_value
     )
-    
-    # Configure trainer
+
+    # =============================================================================
+    # 4. Training
+    # =============================================================================
     trainer_config = {
-        "timesteps": total_timesteps,
-        "headless": True
+        "timesteps": config["trainer"]["timesteps"],
+        "headless": config["trainer"]["headless"]
     }
     
-    # Create trainer
-    trainer = SequentialTrainer(
-        cfg=trainer_config,
-        env=env,
-        agents=agent
-    )
-    
-    # Train the safety critic
+    trainer = SequentialTrainer(cfg=trainer_config, env=env, agents=agent)
     trainer.train()
+
+    # =============================================================================
+    # 5. Saving and Plotting
+    # =============================================================================
+    save_dir = f"./data/models/safety_ddpg_double_integrator_{timestamp}"
+    os.makedirs(save_dir, exist_ok=True)
     
-    # Save safety critic model
-    save_path = f"./data/models/safety_ddpg_double_integrator_{timestamp}"
-    os.makedirs(save_path, exist_ok=True)
-    
-    target_critic_path = os.path.join(save_path, "safety_critic.pt")
+    target_critic_path = os.path.join(save_dir, "safety_critic.pt")
     torch.save(agent.models["target_critic"].state_dict(), target_critic_path)
     print(f"Training complete. Safety critic saved to {target_critic_path}")
+
+    heatmap_path = os.path.join(save_dir, "safety_critic_heatmap.png")
     
-    # Plot and save heatmap with customizable safety threshold
-    heatmap_path = os.path.join(save_path, "safety_critic_heatmap.png")
-    safety_threshold = 0.0  # You can change this value as needed
-    plot_safety_critic_heatmap(agent.models["critic"], device, save_path=heatmap_path, 
-                              show_plot=True, safety_threshold=safety_threshold)
+    plot_safety_critic_heatmap(
+        critic_model=agent.models["critic"], 
+        device=device, 
+        config=config,
+        save_path=heatmap_path, 
+        show_plot=True
+    )
     
-    print("Safety critic training complete. You can now use the safety critic to evaluate states.")
-    print("Lower values indicate less safe states (closer to or beyond boundaries).")
-    print("Higher values indicate safer states (further from boundaries).")
-    print(f"Heatmap visualization saved to {heatmap_path}")
+    print(f"Heatmap visualization saved to {heatmap_path.replace('.png', '_value.png')}")
 
 if __name__ == "__main__":
     # Examples of how to load and plot an existing model with different thresholds:
-    load = True
+    load = False
     # load = False
     policy_path="data/models/ppo_double_integrator_skrl_20250827_170020/policy.pt"
-    critic_path="data/models/safety_ddpg_double_integrator_20250827_173450/safety_critic.pt"
+    critic_path="data/models/safety_ddpg_double_integrator_20250827_225755/safety_critic.pt"
     
     if load:
         # Load and plot both critic and policy
         load_and_plot_critic(critic_path=critic_path, 
                            policy_path=policy_path, 
                            device="cpu", 
-                           safety_threshold=0.40)
+                           safety_threshold=0.20)
     else:
         main(policy_path=policy_path, critic_path=None)

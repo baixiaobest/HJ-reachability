@@ -206,7 +206,7 @@ class SafetyDDPG(Agent):
         # Set up discount factor scheduler
         self._discount_factor_scheduler_cfg = self.cfg.get("discount_factor_scheduler", None)
         if self._discount_factor_scheduler_cfg:
-            self._discount_scheduler = DiscountFactorScheduler(initial_gamma=self._discount_factor, **self._discount_factor_scheduler_cfg)
+            self._discount_scheduler = DiscountFactorScheduler(**self._discount_factor_scheduler_cfg)
         else:
             self._discount_scheduler = None
 

@@ -26,13 +26,14 @@ class VectorizedDoubleIntegrator(gym.vector.VectorEnv):
         device: str = "cpu",  # set to "cpu" if no GPU
         pos_range: tuple = (-2.0, 2.0),  # (min, max) for initial position
         vel_range: tuple = (-1.0, 1.0),   # (min, max) for initial velocity
+        u_range: tuple = (-3.0, 3.0),   # (min, max) for action
         pos_bounds: tuple = (-5.0, 5.0)   # (min, max) termination boundaries for position
     ):
         super().__init__()
 
         # Define observation and action spaces
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(2,), dtype=np.float32)
-        self.action_space = gym.spaces.Box(low=-3.0, high=3.0, shape=(1,), dtype=np.float32)
+        self.action_space = gym.spaces.Box(low=u_range[0], high=u_range[1], shape=(1,), dtype=np.float32)
         
         self.num_envs = num_envs
         self.device = device
@@ -43,6 +44,7 @@ class VectorizedDoubleIntegrator(gym.vector.VectorEnv):
         # Store randomization ranges
         self.pos_range = pos_range
         self.vel_range = vel_range
+        self.u_range = u_range
         
         # Store position termination boundaries
         self.pos_bounds = pos_bounds
@@ -115,26 +117,13 @@ class VectorizedDoubleIntegrator(gym.vector.VectorEnv):
             actions_t = torch.as_tensor(actions, device=self.device, dtype=torch.float32).reshape(self.num_envs, 1)
         else:
             actions_t = actions.reshape(self.num_envs, 1)
-        
-        # Check for NaN and large values in actions
-        if torch.isnan(actions_t).any():
-            print("WARNING: NaN detected in actions!")
-            print(f"NaN actions count: {torch.isnan(actions_t).sum().item()}/{actions_t.numel()}")
-            actions_t = torch.nan_to_num(actions_t, nan=0.0)
-        
-        # Check for large action values
-        large_action_threshold = 100.0
-        if torch.abs(actions_t).max() > large_action_threshold:
-            print(f"WARNING: Large actions detected! Max: {torch.abs(actions_t).max().item():.6f}")
-            print(f"Actions above threshold: {(torch.abs(actions_t) > large_action_threshold).sum().item()}")
-            large_action_indices = torch.where(torch.abs(actions_t) > large_action_threshold)[0]
-            print(f"Large action values: {actions_t[large_action_indices].flatten()}")
+
+        actions_t = torch.clamp(actions_t, self.u_range[0], self.u_range[1])
         
         # Update with bounded dynamics
         self.vel = self.vel + actions_t * self.dt
         
         self.pos = self.pos + self.vel * self.dt
-        
 
         # Increment steps
         self.steps = self.steps + 1
