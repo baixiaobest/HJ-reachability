@@ -32,19 +32,9 @@ SAFETY_DDPG_DEFAULT_CONFIG = {
     "state_preprocessor": None,             # state preprocessor class (see skrl.resources.preprocessors)
     "state_preprocessor_kwargs": {},        # state preprocessor's kwargs (e.g. {"size": env.observation_space})
 
-    # "random_timesteps": 0,          # random exploration steps
     "learning_starts": 0,           # learning starts after this many steps
 
     "grad_norm_clip": 0,            # clipping coefficient for the norm of the gradients
-
-    # "exploration": {
-    #     "noise": None,              # exploration noise
-    #     "initial_scale": 1.0,       # initial scale for the noise
-    #     "final_scale": 1e-3,        # final scale for the noise
-    #     "timesteps": None,          # timesteps for the noise decay
-    # },
-
-    # "rewards_shaper": None,         # rewards shaping function: Callable(reward, timestep, timesteps) -> reward
 
     "mixed_precision": False,       # enable automatic mixed precision for higher performance
 
@@ -182,17 +172,9 @@ class SafetyDDPG(Agent):
 
         self._state_preprocessor = self.cfg["state_preprocessor"]
 
-        # self._random_timesteps = self.cfg["random_timesteps"]
         self._learning_starts = self.cfg["learning_starts"]
 
         self._grad_norm_clip = self.cfg["grad_norm_clip"]
-
-        # self._exploration_noise = self.cfg["exploration"]["noise"]
-        # self._exploration_initial_scale = self.cfg["exploration"]["initial_scale"]
-        # self._exploration_final_scale = self.cfg["exploration"]["final_scale"]
-        # self._exploration_timesteps = self.cfg["exploration"]["timesteps"]
-
-        # self._rewards_shaper = self.cfg["rewards_shaper"]
 
         self._mixed_precision = self.cfg["mixed_precision"]
 
@@ -392,7 +374,7 @@ class SafetyDDPG(Agent):
                         (1 - self._discount_factor) * sampled_rewards\
                         + self._discount_factor 
                             * torch.min(sampled_rewards, 
-                                        next_state_q_values )#* (sampled_terminated | sampled_truncated).logical_not())
+                                        next_state_q_values * (sampled_terminated | sampled_truncated).logical_not())
                     )
 
                 # compute critic loss
@@ -418,16 +400,13 @@ class SafetyDDPG(Agent):
             self.scaler.update()  # called once, after optimizers have been stepped
 
             # update target networks
-            # self.target_policy.update_parameters(self.policy, polyak=self._polyak)
             self.target_critic.update_parameters(self.critic, polyak=self._polyak)
 
             # update learning rate
             if self._learning_rate_scheduler:
-                # self.policy_scheduler.step()
                 self.critic_scheduler.step()
 
             # record data
-            # self.track_data("Loss / Policy loss", policy_loss.item())
             self.track_data("Loss / Critic loss", critic_loss.item())
 
             self.track_data("Q-network / Q1 (max)", torch.max(critic_values).item())
