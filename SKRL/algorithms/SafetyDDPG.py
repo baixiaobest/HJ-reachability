@@ -20,7 +20,8 @@ SAFETY_DDPG_DEFAULT_CONFIG = {
     "gradient_steps": 1,            # gradient steps
     "batch_size": 64,               # training batch size
 
-    "discount_factor": 0.99,        # discount factor (gamma)
+    "discount_factor": 0.99,        # initial discount factor (gamma)
+    "discount_factor_scheduler": None,  # discount factor scheduler config
     "polyak": 0.005,                # soft update hyperparameter (tau)
 
     "actor_learning_rate": 1e-3,    # actor learning rate
@@ -61,6 +62,44 @@ SAFETY_DDPG_DEFAULT_CONFIG = {
 }
 # [end-config-dict-torch]
 # fmt: on
+
+
+class DiscountFactorScheduler:
+    """Custom scheduler for discount factor annealing"""
+    
+    def __init__(self, initial_gamma=0.99, final_gamma=0.999, total_timesteps=50000, 
+                 schedule_type="linear"):
+        self.initial_gamma = initial_gamma
+        self.final_gamma = final_gamma
+        self.total_timesteps = total_timesteps
+        self.schedule_type = schedule_type
+        self.current_gamma = initial_gamma
+        
+    def step(self, timestep):
+        """Update discount factor based on current timestep"""
+        if timestep >= self.total_timesteps:
+            self.current_gamma = self.final_gamma
+            return self.current_gamma
+            
+        progress = timestep / self.total_timesteps
+        
+        if self.schedule_type == "linear":
+            self.current_gamma = self.initial_gamma + (self.final_gamma - self.initial_gamma) * progress
+        elif self.schedule_type == "exponential":
+            # Exponential decay
+            decay_rate = (self.final_gamma / self.initial_gamma) ** (1 / self.total_timesteps)
+            self.current_gamma = self.initial_gamma * (decay_rate ** timestep)
+        elif self.schedule_type == "cosine":
+            # Cosine annealing
+            import math
+            self.current_gamma = self.final_gamma + (self.initial_gamma - self.final_gamma) * \
+                               (1 + math.cos(math.pi * progress)) / 2
+        
+        return self.current_gamma
+    
+    def get_gamma(self):
+        """Get current discount factor"""
+        return self.current_gamma
 
 
 class SafetyDDPG(Agent):
@@ -180,6 +219,13 @@ class SafetyDDPG(Agent):
             self.checkpoint_modules["state_preprocessor"] = self._state_preprocessor
         else:
             self._state_preprocessor = self._empty_preprocessor
+
+        # Set up discount factor scheduler
+        self._discount_factor_scheduler_cfg = self.cfg.get("discount_factor_scheduler", None)
+        if self._discount_factor_scheduler_cfg:
+            self._discount_scheduler = DiscountFactorScheduler(initial_gamma=self._discount_factor, **self._discount_factor_scheduler_cfg)
+        else:
+            self._discount_scheduler = None
 
     def init(self, trainer_cfg: Optional[Mapping[str, Any]] = None) -> None:
         """Initialize the agent"""
@@ -310,13 +356,11 @@ class SafetyDDPG(Agent):
         super().post_interaction(timestep, timesteps)
 
     def _update(self, timestep: int, timesteps: int) -> None:
-        """Algorithm's main update step
+        """Algorithm's main update step with discount factor scheduling"""
 
-        :param timestep: Current timestep
-        :type timestep: int
-        :param timesteps: Number of timesteps
-        :type timesteps: int
-        """
+        # Update discount factor if scheduler is enabled
+        if self._discount_scheduler:
+            self._discount_factor = self._discount_scheduler.step(timestep)
 
         # gradient steps
         for gradient_step in range(self._gradient_steps):
@@ -348,7 +392,7 @@ class SafetyDDPG(Agent):
                         (1 - self._discount_factor) * sampled_rewards\
                         + self._discount_factor 
                             * torch.min(sampled_rewards, 
-                                        next_state_q_values * (sampled_terminated | sampled_truncated).logical_not())
+                                        next_state_q_values )#* (sampled_terminated | sampled_truncated).logical_not())
                     )
 
                 # compute critic loss
@@ -370,28 +414,6 @@ class SafetyDDPG(Agent):
                 nn.utils.clip_grad_norm_(self.critic.parameters(), self._grad_norm_clip)
 
             self.scaler.step(self.critic_optimizer)
-
-            # with torch.autocast(device_type=self._device_type, enabled=self._mixed_precision):
-            #     # compute policy (actor) loss
-            #     actions, _, _ = self.policy.act({"states": sampled_states}, role="policy")
-            #     critic_values, _, _ = self.critic.act(
-            #         {"states": sampled_states, "taken_actions": actions}, role="critic"
-            #     )
-
-            #     policy_loss = -critic_values.mean()
-
-            # # optimization step (policy)
-            # self.policy_optimizer.zero_grad()
-            # self.scaler.scale(policy_loss).backward()
-
-            # if config.torch.is_distributed:
-            #     self.policy.reduce_parameters()
-
-            # if self._grad_norm_clip > 0:
-            #     self.scaler.unscale_(self.policy_optimizer)
-            #     nn.utils.clip_grad_norm_(self.policy.parameters(), self._grad_norm_clip)
-
-            # self.scaler.step(self.policy_optimizer)
 
             self.scaler.update()  # called once, after optimizers have been stepped
 
@@ -419,3 +441,7 @@ class SafetyDDPG(Agent):
             if self._learning_rate_scheduler:
                 self.track_data("Learning / Policy learning rate", self.policy_scheduler.get_last_lr()[0])
                 self.track_data("Learning / Critic learning rate", self.critic_scheduler.get_last_lr()[0])
+
+            # Track discount factor
+            if self._discount_scheduler:
+                self.track_data("Learning / Discount factor", self._discount_factor)

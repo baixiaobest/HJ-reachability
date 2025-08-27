@@ -259,8 +259,10 @@ def main():
         num_envs=1,  # Single environment for inference
         device=device,
         max_steps=args.max_steps,
-        pos_range=(-9.0, 9.0),
-        vel_range=(-3.0, 3.0),
+        # pos_range=(-9.0, 9.0),
+        # vel_range=(-3.0, 3.0),
+        pos_range=(0.35, 0.35),
+        vel_range=(-1.3, -1.3),
         pos_bounds=(-10.0, 10.0)
     )
     

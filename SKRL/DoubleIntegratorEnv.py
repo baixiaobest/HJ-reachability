@@ -186,13 +186,13 @@ class VectorizedDoubleIntegrator(gym.vector.VectorEnv):
         done_bounds = done_bounds.squeeze(-1)
         
         # Check if close to target
-        done_close = (dist < 0.05)
+        # done_close = (dist < 0.05)
         
         # Check if max steps reached
         done_max = (self.steps >= self.max_steps)
         
         # Combine all termination conditions
-        terminated = (done_close | done_bounds)  # True termination
+        terminated = (done_bounds)  # True termination
         truncated = done_max                     # Truncated due to max steps
         dones = terminated | truncated           # Combined done flag
         
